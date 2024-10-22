@@ -402,7 +402,7 @@ def main():
             oto_ini = utaupy.otoini.load(str(temp_dir / "oto.ini"))
             wav_files = list(temp_dir.glob("*.wav"))
             with tqdm.tqdm(total=len(wav_files)) as pbar:
-                for wav_file in temp_dir.glob("*.wav"):
+                for wav_file in wav_files:
                     otos: list[utaupy.otoini.Oto] = remove_duplicate_otos(
                         list(filter(lambda oto: oto.filename == wav_file.name, oto_ini))
                     )
@@ -907,6 +907,7 @@ def main():
                 print("Phase 3-1: Normalizing volume...")
                 print()
 
+                wav_files = list(temp_dir.glob("*.wav"))
                 with tqdm.tqdm(total=len(wav_files)) as pbar:
                     for wav_file in wav_files:
                         audio: AudioSegment = AudioSegment.from_file(wav_file)
