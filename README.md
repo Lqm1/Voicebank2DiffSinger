@@ -5,6 +5,8 @@
 
 **Voicebank2DiffSinger** は、UTAU音源から **SOFA** と **MakeDiffSinger** を用いて、DiffSinger 用の学習データセットを自動生成するツールです。
 
+[English README](README_EN.md)
+
 ## 目次
 
 - [概要](#概要)
@@ -36,6 +38,7 @@
 Directory structure:
 └── Voicebank2DiffSinger/
     ├── README.md
+    ├── README_EN.md
     ├── LICENSE
     ├── pyproject.toml
     ├── requirements.txt
