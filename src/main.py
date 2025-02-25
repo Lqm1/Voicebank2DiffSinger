@@ -18,9 +18,13 @@ import SOFA.modules.g2p
 from SOFA.modules.utils.export_tool import Exporter
 from SOFA.modules.utils.post_processing import post_processing
 from SOFA.train import LitForcedAlignmentTask
-from SOFA.modules.g2p.base_g2p import DataFrameDataset
-import pandas as pd
-import warnings
+from g2p import PyOpenJTalkG2P
+from utils import (
+    import_module_from_path,
+    bowlroll_file_download,
+    remove_specific_consecutive_duplicates,
+    remove_duplicate_otos,
+)
 import pyopenjtalk
 import torch
 import lightning as pl
@@ -29,51 +33,10 @@ from MakeDiffSinger.acoustic_forced_alignment.build_dataset import build_dataset
 import datetime
 import shutil
 import os
-import importlib.util
-import requests
-from bs4 import BeautifulSoup
 import subprocess
 import utaupy
 import time
 import textgrid
-
-
-if not pathlib.Path("src/Moresampler").exists():
-    with tempfile.TemporaryDirectory() as temp_dir_str:
-        temp_dir = pathlib.Path(temp_dir_str)
-        file_id = 139123
-        file_name = pathlib.Path("Moresampler.zip")
-        with requests.Session() as session:
-            session.headers.update(
-                {
-                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                }
-            )
-            response = session.get(f"https://bowlroll.net/file/{file_id}")
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            data = {
-                "download_key": "bowlroll_download_control_mischievous",
-                "csrf_token": soup.find("div", {"id": "initialize"})["data-csrf_token"],
-            }
-            response = session.post(
-                f"https://bowlroll.net/api/file/{file_id}/download-check", data=data
-            )
-            response.raise_for_status()
-            response = session.get(response.json()["url"], stream=True)
-            response.raise_for_status()
-            with open(temp_dir / file_name, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        shutil.unpack_archive(temp_dir / file_name, temp_dir / "Moresampler")
-        shutil.move(temp_dir / "Moresampler", "src/Moresampler")
-
-
-def import_module_from_path(module_path: str, module_name: str):
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 add_ph_num: click.Command = import_module_from_path(
@@ -86,106 +49,24 @@ csv2ds: click.Command = import_module_from_path(
     "src/MakeDiffSinger/variance-temp-solution/convert_ds.py", "convert_ds"
 ).csv2ds
 
+
+if not pathlib.Path("src/Moresampler").exists():
+    with tempfile.TemporaryDirectory() as temp_dir_str:
+        temp_dir = pathlib.Path(temp_dir_str)
+        file_id = 139123
+        file_name = pathlib.Path("Moresampler.zip")
+        content = bowlroll_file_download(file_id)
+        with open(temp_dir / file_name, "wb") as f:
+            f.write(content)
+        shutil.unpack_archive(temp_dir / file_name, temp_dir / "Moresampler")
+        shutil.move(temp_dir / "Moresampler", "src/Moresampler")
+
+
 with open("pyproject.toml", "rb") as f:
     pyproject = tomllib.load(f)
 
 HIRAGANA_REGEX = re.compile(r"([あ-ん][ぁぃぅぇぉゃゅょ]|[あ-ん])")
 KATAKANA_REGEX = re.compile(r"([ア-ン][ァィゥェォャュョ]|[ア-ン])")
-
-
-def remove_specific_consecutive_duplicates(
-    input_list: list[str], specific_elements: list[str]
-):
-    if not input_list:
-        return []
-
-    # Initialize the result list with the first element
-    result = [input_list[0]]
-
-    # Iterate through the input list starting from the second element
-    for item in input_list[1:]:
-        # If the current item is different from the last item in the result list
-        # or if it is not in the specific elements list, add it
-        if item != result[-1] or item not in specific_elements:
-            result.append(item)
-
-    return result
-
-
-def remove_duplicate_otos(otos: list[utaupy.otoini.Oto]):
-    unique_otos: list[utaupy.otoini.Oto] = []
-    for oto in otos:
-        for unique_oto in unique_otos:
-            if (
-                oto.filename == unique_oto.filename
-                and oto.offset == unique_oto.offset
-                and oto.consonant == unique_oto.consonant
-                and oto.cutoff == unique_oto.cutoff
-                and oto.preutterance == unique_oto.preutterance
-                and oto.overlap == unique_oto.overlap
-            ):
-                break
-        else:
-            unique_otos.append(oto)
-    return unique_otos
-
-
-class PyOpenJTalkG2P:
-    def __call__(self, text: str):
-        ph_seq, word_seq, ph_idx_to_word_idx = self._g2p(text)
-
-        # The first and last phonemes should be `SP`,
-        # and there should not be more than two consecutive `SP`s at any position.
-        assert ph_seq[0] == "SP" and ph_seq[-1] == "SP"
-        assert all(
-            ph_seq[i] != "SP" or ph_seq[i + 1] != "SP" for i in range(len(ph_seq) - 1)
-        )
-        return ph_seq, word_seq, ph_idx_to_word_idx
-
-    def _g2p(self, input_text: str):
-        word_seq_raw = input_text.strip().split(" ")
-        word_seq = []
-        word_seq_idx = 0
-        ph_seq = ["SP"]
-        ph_idx_to_word_idx = [-1]
-        for word in word_seq_raw:
-            phones = pyopenjtalk.g2p(word, join=False)
-            if not phones:
-                warnings.warn(f"Word {word} is not in the dictionary. Ignored.")
-                continue
-            word_seq.append(word)
-            for i, ph in enumerate(phones):
-                if (i == 0 or i == len(phones) - 1) and ph == "SP":
-                    warnings.warn(
-                        f"The first or last phoneme of word {word} is SP, which is not allowed. "
-                        "Please check your dictionary."
-                    )
-                    continue
-                ph_seq.append(ph)
-                ph_idx_to_word_idx.append(word_seq_idx)
-            if ph_seq[-1] != "SP":
-                ph_seq.append("SP")
-                ph_idx_to_word_idx.append(-1)
-            word_seq_idx += 1
-
-        return ph_seq, word_seq, ph_idx_to_word_idx
-
-    def get_dataset(self, wav_paths: list[pathlib.Path]):
-        dataset = []
-        for wav_path in wav_paths:
-            try:
-                if wav_path.with_suffix(".txt").exists():
-                    with open(wav_path.with_suffix(".txt"), "r", encoding="utf-8") as f:
-                        lab_text = f.read().strip()
-                    ph_seq, word_seq, ph_idx_to_word_idx = self(lab_text)
-                    dataset.append((wav_path, ph_seq, word_seq, ph_idx_to_word_idx))
-            except Exception as e:
-                e.args = (f" Error when processing {wav_path}: {e} ",)
-                raise e
-        dataset = pd.DataFrame(
-            dataset, columns=["wav_path", "ph_seq", "word_seq", "ph_idx_to_word_idx"]
-        )
-        return DataFrameDataset(dataset)
 
 
 def validate_directories(
@@ -201,8 +82,8 @@ def validate_directories(
 
 @click.command()
 @click.version_option(version=pyproject["project"]["version"])
-@click.argument("voicebank_dirs", nargs=-1, callback=validate_directories)
-def main(voicebank_dirs: list[str]):
+@click.argument("voicebank_dir_strs", nargs=-1, callback=validate_directories)
+def main(voicebank_dir_strs: list[str]):
     print(
         f"Voicebank to DiffSinger {pyproject['project']['version']} - Convert the UTAU Voicebank to a configuration compatible with DiffSinger Dataset"
     )
@@ -228,7 +109,9 @@ def main(voicebank_dirs: list[str]):
         )
     print()
 
-    voicebank_dirs = [pathlib.Path(voicebank_dir) for voicebank_dir in sys.argv[1:]]
+    voicebank_dirs = [
+        pathlib.Path(voicebank_dir_str) for voicebank_dir_str in voicebank_dir_strs
+    ]
 
     with tempfile.TemporaryDirectory() as temp_dir_str:
         temp_dir = pathlib.Path(temp_dir_str)
