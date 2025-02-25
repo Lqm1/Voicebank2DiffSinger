@@ -8,23 +8,27 @@ import tempfile
 import pathlib
 import tqdm
 import re
-from pydub import AudioSegment
-from pydub.effects import strip_silence, normalize
+import tomllib
+import soundfile
+import librosa
+import librosa.effects
+import librosa.util
+import SOFA.modules.AP_detector
+import SOFA.modules.g2p
+from SOFA.modules.utils.export_tool import Exporter
+from SOFA.modules.utils.post_processing import post_processing
+from SOFA.train import LitForcedAlignmentTask
 from SOFA.modules.g2p.base_g2p import DataFrameDataset
 import pandas as pd
 import warnings
 import pyopenjtalk
-import SOFA.infer
-import SOFA.modules.g2p
-import SOFA.modules.AP_detector
 import torch
-from SOFA.train import LitForcedAlignmentTask
 import lightning as pl
-from click import Context
+import click
 from MakeDiffSinger.acoustic_forced_alignment.build_dataset import build_dataset
 import datetime
 import shutil
-from click import Command
+import os
 import importlib.util
 import requests
 from bs4 import BeautifulSoup
@@ -72,17 +76,19 @@ def import_module_from_path(module_path: str, module_name: str):
     return module
 
 
-add_ph_num: Command = import_module_from_path(
+add_ph_num: click.Command = import_module_from_path(
     "src/MakeDiffSinger/variance-temp-solution/add_ph_num.py", "add_ph_num"
 ).add_ph_num
-estimate_midi: Command = import_module_from_path(
+estimate_midi: click.Command = import_module_from_path(
     "src/MakeDiffSinger/variance-temp-solution/estimate_midi.py", "estimate_midi"
 ).estimate_midi
-csv2ds: Command = import_module_from_path(
+csv2ds: click.Command = import_module_from_path(
     "src/MakeDiffSinger/variance-temp-solution/convert_ds.py", "convert_ds"
 ).csv2ds
 
-VERSION = "0.0.1"
+with open("pyproject.toml", "rb") as f:
+    pyproject = tomllib.load(f)
+
 HIRAGANA_REGEX = re.compile(r"([あ-ん][ぁぃぅぇぉゃゅょ]|[あ-ん])")
 KATAKANA_REGEX = re.compile(r"([ア-ン][ァィゥェォャュョ]|[ア-ン])")
 
@@ -182,14 +188,25 @@ class PyOpenJTalkG2P:
         return DataFrameDataset(dataset)
 
 
-def main():
+def validate_directories(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> tuple[str, ...]:
+    if not value:
+        raise click.BadParameter("At least one directory path must be specified.")
+    for path in value:
+        if not os.path.isdir(path):
+            raise click.BadParameter(f"'{path}' is not a directory.")
+    return value
+
+
+@click.command()
+@click.version_option(version=pyproject["project"]["version"])
+@click.argument("voicebank_dirs", nargs=-1, callback=validate_directories)
+def main(voicebank_dirs: list[str]):
     print(
-        f"Voicebank to DiffSinger {VERSION} - Convert the UTAU sound source folder to a configuration compatible with DiffSinger"
+        f"Voicebank to DiffSinger {pyproject['project']['version']} - Convert the UTAU Voicebank to a configuration compatible with DiffSinger Dataset"
     )
     print()
-    if len(sys.argv) < 2:
-        print("Usage: python src/main.py [voicebank_dir1] [voicebank_dir2] ...")
-        sys.exit(1)
     print("Select the forced aligner to use:")
     print("1: SOFA")
     print("2: Moresampler")
@@ -207,7 +224,7 @@ def main():
     detect_nonslicent_flag = False
     if forced_aligner == "SOFA":
         detect_nonslicent_flag = (
-            input("Do you want to detect nonsilence? (y/n): ") == "y"
+            input("Do you want to perform silence trimming? (y/n): ") == "y"
         )
     print()
 
@@ -240,9 +257,9 @@ def main():
 
                 with tqdm.tqdm(total=len(wav_files)) as pbar:
                     for wav_file in wav_files:
-                        audio: AudioSegment = AudioSegment.from_file(wav_file)
-                        normalized_audio: AudioSegment = normalize(audio)
-                        normalized_audio.export(wav_file, format="wav")
+                        y, sr = librosa.load(wav_file, sr=None)
+                        y = librosa.util.normalize(y)
+                        soundfile.write(wav_file, y, sr)
                         pbar.update(1)
 
                 print()
@@ -250,14 +267,14 @@ def main():
                 print()
 
             if detect_nonslicent_flag:
-                print("Phase 1-1: Detecting nonsilence...")
+                print("Phase 1-1: Performing silence trimming...")
                 print()
 
                 with tqdm.tqdm(total=len(wav_files)) as pbar:
                     for wav_file in wav_files:
-                        audio: AudioSegment = AudioSegment.from_file(wav_file)
-                        trimmed_audio: AudioSegment = strip_silence(audio)
-                        trimmed_audio.export(wav_file, format="wav")
+                        y, sr = librosa.load(wav_file, sr=None)
+                        y = librosa.effects.trim(y, top_db=30)[0]
+                        soundfile.write(wav_file, y, sr)
                         pbar.update(1)
 
                 print()
@@ -303,7 +320,7 @@ def main():
             torch.set_grad_enabled(False)
 
             model = LitForcedAlignmentTask.load_from_checkpoint(
-                "src/cktp/japanese-v2.0-45000.ckpt"
+                "src/ckpt/step.100000.ckpt"
             )
             model.set_inference_mode("force")
 
@@ -316,9 +333,10 @@ def main():
             )
 
             predictions = get_AP.process(predictions)
-            predictions = SOFA.infer.post_processing(predictions)
+            predictions, log = post_processing(predictions)
 
-            SOFA.infer.save_textgrids(predictions)
+            exporter = Exporter(predictions, log)
+            exporter.export(["textgrid"])
 
             print()
             print("Phase 3: Done.")
@@ -417,13 +435,14 @@ def main():
                         wav_file.unlink()
                         pbar.update(1)
                         continue
-                    audio = AudioSegment.from_file(wav_file)
+                    y, sr = librosa.load(wav_file, sr=None)
+                    duration_seconds = librosa.get_duration(y=y, sr=sr)
                     tg = textgrid.TextGrid()
                     grapheme_tier = textgrid.IntervalTier(
-                        name="graphemes", minTime=0, maxTime=audio.duration_seconds
+                        name="graphemes", minTime=0, maxTime=duration_seconds
                     )
                     phoneme_tier = textgrid.IntervalTier(
-                        name="phonemes", minTime=0, maxTime=audio.duration_seconds
+                        name="phonemes", minTime=0, maxTime=duration_seconds
                     )
                     for i, oto in enumerate(sorted_otos[:-1]):
                         splitted_alias = oto.alias.split()
@@ -463,7 +482,7 @@ def main():
                                     )
                                     grapheme_tier.add(
                                         (oto.offset + oto.preutterance) / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         splitted_alias[1],
                                     )
                                     grapheme_tier.add(
@@ -485,7 +504,7 @@ def main():
                                     phoneme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                 elif len(phs) == 2:
@@ -523,7 +542,7 @@ def main():
                                     grapheme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                     phoneme_tier.add(
@@ -545,7 +564,7 @@ def main():
                                     phoneme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                 else:
@@ -732,7 +751,7 @@ def main():
                                     grapheme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                     phoneme_tier.add(
@@ -744,7 +763,7 @@ def main():
                                     phoneme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                 elif len(phs) == 2:
@@ -772,7 +791,7 @@ def main():
                                     grapheme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                     phoneme_tier.add(
@@ -789,7 +808,7 @@ def main():
                                     phoneme_tier.add(
                                         (otos[i + 1].offset + otos[i + 1].preutterance)
                                         / 1000,
-                                        audio.duration_seconds,
+                                        duration_seconds,
                                         "SP",
                                     )
                                 else:
@@ -910,9 +929,9 @@ def main():
                 wav_files = list(temp_dir.glob("*.wav"))
                 with tqdm.tqdm(total=len(wav_files)) as pbar:
                     for wav_file in wav_files:
-                        audio: AudioSegment = AudioSegment.from_file(wav_file)
-                        normalized_audio: AudioSegment = normalize(audio)
-                        normalized_audio.export(wav_file, format="wav")
+                        y, sr = librosa.load(wav_file, sr=None)
+                        y = librosa.util.normalize(y)
+                        soundfile.write(wav_file, y, sr)
                         pbar.update(1)
 
                 print()
@@ -924,7 +943,7 @@ def main():
         print("Phase 4: Build dataset...")
         print()
 
-        ctx = Context(build_dataset)
+        ctx = click.Context(build_dataset)
         with ctx:
             build_dataset.parse_args(
                 ctx,
@@ -952,14 +971,14 @@ def main():
     print("Phase 5: Add phoneme number...")
     print()
 
-    ctx = Context(add_ph_num)
+    ctx = click.Context(add_ph_num)
     with ctx:
         add_ph_num.parse_args(
             ctx,
             [
                 str(output_path / "transcriptions.csv"),
                 "--dictionary",
-                "src/dictionaries/japanese-dictionary.txt",
+                "src/dictionaries/japanese-extension-sofa.txt",
             ],
         )
         add_ph_num.invoke(ctx)
@@ -970,7 +989,7 @@ def main():
     print("Phase 6: Estimate MIDI...")
     print()
 
-    ctx = Context(estimate_midi)
+    ctx = click.Context(estimate_midi)
     with ctx:
         estimate_midi.parse_args(
             ctx,
@@ -987,7 +1006,7 @@ def main():
     print("Phase 7: Convert CSV to DiffSinger...")
     print()
 
-    ctx = Context(csv2ds)
+    ctx = click.Context(csv2ds)
     with ctx:
         csv2ds.parse_args(
             ctx,

@@ -1,0 +1,34 @@
+[project]
+name = "voicebank2diffsinger"
+version = "0.1.0"
+description = "Convert the UTAU Voicebank to a configuration compatible with DiffSinger Dataset"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.13.3",
+    "biopython==1.78",
+    "chardet>=5.2.0",
+    "click>=8.1.8",
+    "einops==0.6.1",
+    "h5py>=3.13.0",
+    "librosa<0.10.0",
+    "lightning>=2.0.0",
+    "matplotlib~=3.7.3",
+    "numba>=0.61.0",
+    "numpy~=1.24.1",
+    "pandas~=2.0.3",
+    "praat-parselmouth>=0.4.5",
+    "praatio<6.0.0",
+    "pyopenjtalk-plus>=0.3.4.post10",
+    "pyyaml~=6.0.1",
+    "soundfile>=0.13.1",
+    "sox>=1.5.0",
+    "sqlalchemy==1.4.46",
+    "tensorboard>=2.19.0",
+    "tensorboardx>=2.6.2.2",
+    "textgrid>=1.6.1",
+    "torch>=2.6.0",
+    "torchaudio>=2.6.0",
+    "tqdm~=4.66.1",
+    "utaupy>=1.19.1",
+]

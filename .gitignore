@@ -161,9 +161,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-src/cktp/**
-!src/cktp/**/
-!src/cktp/**/.gitkeep
+src/ckpt/**
+!src/ckpt/**/
+!src/ckpt/**/.gitkeep
 
 src/dictionaries/**
 !src/dictionaries/**/
