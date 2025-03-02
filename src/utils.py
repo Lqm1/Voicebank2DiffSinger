@@ -2,6 +2,7 @@ import utaupy
 import importlib.util
 import requests
 from bs4 import BeautifulSoup
+import re
 
 
 def import_module_from_path(module_path: str, module_name: str):
@@ -75,3 +76,30 @@ def remove_duplicate_otos(otos: list[utaupy.otoini.Oto]):
         else:
             unique_otos.append(oto)
     return unique_otos
+
+
+def convert_sharp_flat_in_notes(text: str) -> str:
+    """
+    音名の # を ♯ に、b を ♭ に変換する関数。
+    関係ない # や b はそのまま維持する。
+
+    Args:
+        text (str): 変換対象の文字列
+
+    Returns:
+        str: 変換後の文字列
+    """
+
+    def replace_match(match: re.Match) -> str:
+        note: str = match.group(1)
+        accidental: str = match.group(2)
+        octave: str = match.group(3)
+
+        if accidental == "#":
+            accidental = "♯"
+        elif accidental == "b":
+            accidental = "♭"
+
+        return note + accidental + octave
+
+    return re.sub(r"([A-G])([#b])(\d)", replace_match, text)

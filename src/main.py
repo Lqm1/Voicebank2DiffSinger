@@ -24,6 +24,7 @@ from utils import (
     bowlroll_file_download,
     remove_specific_consecutive_duplicates,
     remove_duplicate_otos,
+    convert_sharp_flat_in_notes,
 )
 import pyopenjtalk
 import torch
@@ -124,7 +125,7 @@ def main(voicebank_dir_strs: list[str]):
                     for wav_file in voicebank_dir.glob("*.wav"):
                         shutil.copy(
                             wav_file,
-                            temp_dir / f"{wav_file.stem}_{voicebank_dir.stem}.wav",
+                            temp_dir / convert_sharp_flat_in_notes(f"{wav_file.stem}_{voicebank_dir.stem}.wav"),
                         )
                     pbar.update(1)
 
@@ -280,13 +281,13 @@ def main(voicebank_dir_strs: list[str]):
                     for wav_file in (temp_voicebank_dir).glob("*.wav"):
                         shutil.move(
                             wav_file,
-                            temp_dir / f"{wav_file.stem}_{voicebank_dir.stem}.wav",
+                            temp_dir / convert_sharp_flat_in_notes(f"{wav_file.stem}_{voicebank_dir.stem}.wav"),
                         )
                         otos: list[utaupy.otoini.Oto] = list(
                             filter(lambda oto: oto.filename == wav_file.name, oto_ini)
                         )
                         for oto in otos:
-                            oto.filename = f"{wav_file.stem}_{voicebank_dir.stem}.wav"
+                            oto.filename = convert_sharp_flat_in_notes(f"{wav_file.stem}_{voicebank_dir.stem}.wav")
                             merged_oto_ini.append(oto)
                     shutil.rmtree(temp_voicebank_dir)
                     pbar.update(1)
